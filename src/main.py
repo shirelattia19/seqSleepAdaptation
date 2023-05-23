@@ -3,14 +3,13 @@ import os
 import math
 import glob
 import numpy as np
-import scipy
-import pandas as pd
+import h5py as h5
 from scipy.io import loadmat, savemat
 from matplotlib import mlab
 import matplotlib.pyplot as plt
 
-from default_params import default_params
-from preprocessing import preprocess_ppg
+from src.ppg_preprocessing.default_params import default_params
+from src.ppg_preprocessing.preprocessing import preprocess_ppg
 
 
 def nextpow2(x):
@@ -25,8 +24,10 @@ def plot_spec(Xk):
 
 
 def prepare_seqsleepnet_data(raw_data_path, signal_type, fs, win_size, overlap, nfft):
+    # See file prepare_seqsleepnet_data.m from huy's code
     extension = '.mat' if signal_type == 'eeg' else '.npy'
     for file in glob.glob(raw_data_path + '/*' + extension):
+        print(f'-------------------------- Computing file {file} --------------------------')
         # label and one-hot encoding
         if signal_type == 'eeg':
             d = loadmat(file)
@@ -37,7 +38,7 @@ def prepare_seqsleepnet_data(raw_data_path, signal_type, fs, win_size, overlap, 
         elif signal_type == 'ppg':
             signal_epochs, labels = preprocess_ppg(file, file.replace('PPG.npy', 'nsrr.xml'), default_params['dataset'])
             label = labels.reshape((labels.shape[0], 1))
-            y = np.zeros((label.shape[0], 6))
+            y = np.zeros((label.shape[0], 5))
             for i, l in enumerate(label):
                 y[i][int(l[0])] = 1
         else:
@@ -46,7 +47,7 @@ def prepare_seqsleepnet_data(raw_data_path, signal_type, fs, win_size, overlap, 
         N = signal_epochs.shape[0]
         X = np.zeros((N, 29, int(nfft / 2 + 1)))
         for k in range(signal_epochs.shape[0]):
-            if k % 100 == 0:
+            if k % 300 == 0:
                 print(k, '/', signal_epochs.shape[0])
             Xk, _, _ = mlab.specgram(x=signal_epochs[k, :], pad_to=nfft, NFFT=fs * win_size, Fs=fs,
                                      window=np.hamming(fs * win_size), noverlap=overlap * fs, mode='complex')
@@ -58,19 +59,44 @@ def prepare_seqsleepnet_data(raw_data_path, signal_type, fs, win_size, overlap, 
             Xk = gfg.getH()
             # plot_spec(Xk)
             X[k, :, :] = Xk
-        savemat(os.path.join(raw_data_path, '..', f'mat_{signal_type}', os.path.basename(file).split('.')[0]+'.mat'),
-                {'X': X, 'label': label, 'y': y})
-        d = loadmat(os.path.join(raw_data_path, '..', f'mat_{signal_type}', os.path.basename(file).split('.')[0]+'.mat'))
-        check = d['X']
+        nans = np.unique(np.isnan(X))
+        infs = np.unique(np.isinf(X))
+        if (len(nans) > 1) or (len(infs) > 1) or infs[0] or nans[0]:
+            print('Error NAN/INF values, not saving the data. ')
+        else:
+            saved_file = h5.File(
+                os.path.join(raw_data_path, '..', f'mat_{signal_type}', os.path.basename(file).split('.')[0] + '.mat'), 'w')
+            saved_file.create_dataset('X', data=X)
+            saved_file.create_dataset('y', data=y)
+            saved_file.create_dataset('label', data=label)
+            saved_file.close()
+
+            d = h5.File(os.path.join(raw_data_path, '..', f'mat_{signal_type}', os.path.basename(file).split('.')[0]+'.mat'), 'r')
+            d.keys()
+            check = d.get('X')
+            d.close()
 
 
-def main():
+def main1():
     fs = 100
     win_size = 2
     overlap = 1
     nfft = 2 ** nextpow2(win_size * fs)
     #prepare_seqsleepnet_data(os.path.join('test', 'raw_data_eeg'), 'eeg', fs, win_size, overlap, nfft)
     prepare_seqsleepnet_data(os.path.join('test', 'raw_data_ppg'), 'ppg', fs, win_size, overlap, nfft)
+
+def main():
+    #data = h5.File(os.path.join('test', 'mat_ppg', 'mesa-sleep-6704-PPG.mat'), 'r')
+    data = h5.File(os.path.join('test', 'mat_eeg', 'SS1_01-01-0001_cnn_filterbank_eeg.mat'), 'r')
+
+    data.keys()
+    X = np.array(data['X'])
+    X = np.transpose(X, (2, 1, 0))  # rearrange dimension
+    y = np.array(data['y'])
+    y = np.transpose(y, (1, 0))  # rearrange dimension
+    label = np.array(data['label'])
+    label = np.transpose(label, (1, 0))  # rearrange dimension
+    label = np.squeeze(label)
 
 
 if __name__ == '__main__':
